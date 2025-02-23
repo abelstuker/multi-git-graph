@@ -155,7 +155,36 @@ async fn convert_weeks_to_rows(
     contributions_per_row
 }
 
-async fn print_contribution_graph(contributions_per_row: Vec<Vec<ContributionDay>>) {
+// Take a reference to the contributions_per_row to avoid moving it
+async fn print_months(contributions_per_row: &Vec<Vec<ContributionDay>>) {
+    let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let mut previous_month = "";
+    let mut just_printed_month = false;
+    for start_of_week_date in &contributions_per_row[contributions_per_row.len() - 1] {
+        let date = &start_of_week_date.date;
+        let day: u64 = date.split('-').collect::<Vec<&str>>()[2].parse().unwrap();
+        let month = date.split('-').collect::<Vec<&str>>()[1];
+        let month = months[month.parse::<usize>().unwrap() - 1];
+        if month != previous_month && day < 20 {
+            write!(stdout, "{}", month).expect("Failed to write to stdout");
+            previous_month = month;
+            just_printed_month = true;
+            continue;
+        }
+        if just_printed_month {
+            write!(stdout, " ").expect("Failed to write to stdout");
+            just_printed_month = false;
+        } else {
+            write!(stdout, "  ").expect("Failed to write to stdout");
+        }
+    }
+    write!(stdout, "\n").expect("Failed to write to stdout");
+}
+
+async fn print_contribution_graph(contributions_per_row: &Vec<Vec<ContributionDay>>) {
     let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
     for row in contributions_per_row {
         for contribution in row {
@@ -185,5 +214,7 @@ async fn main() {
 
     let github_contributions_per_week = split_contributions_in_weeks(github_contributions).await;
     let github_contributions_per_row = convert_weeks_to_rows(github_contributions_per_week).await;
-    print_contribution_graph(github_contributions_per_row).await;
+
+    print_months(&github_contributions_per_row).await;
+    print_contribution_graph(&github_contributions_per_row).await;
 }
