@@ -4,11 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use time::OffsetDateTime;
 
-// Environment configuration
-static GITHUB_TOKEN: LazyLock<String> =
-    LazyLock::new(|| dotenv::var("GITHUB_TOKEN").expect("GITHUB_TOKEN not found"));
-static USERNAME: LazyLock<String> =
-    LazyLock::new(|| dotenv::var("GITHUB_USERNAME").expect("GITHUB_USERNAME not found"));
+// Configuration
+struct GitHubConfig {
+    token: String,
+    username: String,
+}
+
+impl GitHubConfig {
+    fn from_env() -> Result<Self, GitHubError> {
+        Ok(Self {
+            token: dotenv::var("GITHUB_TOKEN")
+                .map_err(|_| GitHubError::ConfigError("GITHUB_TOKEN must be set".into()))?,
+            username: dotenv::var("GITHUB_USERNAME")
+                .map_err(|_| GitHubError::ConfigError("GITHUB_USERNAME must be set".into()))?,
+        })
+    }
+}
 
 // GraphQL query constant
 const GITHUB_CONTRIBUTIONS_QUERY: &str = r#"
@@ -92,23 +103,27 @@ pub enum GitHubError {
     ParseError(#[from] serde_json::Error),
     #[error("GitHub API error: {0}")]
     ApiError(String),
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
 }
 
 // GitHub client
 struct GitHubClient {
     client: Client,
+    config: GitHubConfig,
 }
 
 impl GitHubClient {
-    fn new() -> Self {
+    fn new(config: GitHubConfig) -> Self {
         Self {
             client: Client::new(),
+            config,
         }
     }
 
     async fn fetch_contributions(&self) -> Result<GitHubResponse, GitHubError> {
         let variables = serde_json::json!({
-            "username": *USERNAME,
+            "username": self.config.username,
         });
 
         let body = serde_json::json!({
@@ -119,7 +134,7 @@ impl GitHubClient {
         let response = self
             .client
             .post("https://api.github.com/graphql")
-            .header("Authorization", format!("Bearer {}", *GITHUB_TOKEN))
+            .header("Authorization", format!("Bearer {}", self.config.token))
             .header("User-Agent", "All Contributions CLI")
             .json(&body)
             .send()
@@ -187,7 +202,8 @@ pub async fn get_github_contributions(
     start_date: OffsetDateTime,
     end_date: OffsetDateTime,
 ) -> Result<ContributionCollection, GitHubError> {
-    let client = GitHubClient::new();
+    let config = GitHubConfig::from_env()?;
+    let client = GitHubClient::new(config);
     let response = client.fetch_contributions().await?;
 
     let calendar = response

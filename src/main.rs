@@ -148,12 +148,17 @@ impl ContributionGraphRenderer {
 
 // Data processing
 async fn process_contributions(
-    collections: Vec<ContributionCollection>,
+    collections: Vec<Option<ContributionCollection>>,
 ) -> (Vec<Vec<Option<ContributionDay>>>, i64) {
     let mut contributions_per_row: Vec<Vec<Option<ContributionDay>>> = vec![vec![]; 7];
     let mut max_contributions = 0;
 
     for collection in collections {
+        // Only process collections that are not None
+        let collection = match collection {
+            Some(collection) => collection,
+            None => continue,
+        };
         for (weeknumber, contributions) in collection.contributions {
             for (day, contribution) in contributions.iter().enumerate() {
                 while contributions_per_row[day].len() <= weeknumber as usize {
@@ -191,14 +196,14 @@ async fn main() -> std::io::Result<()> {
         ))
         .expect("Failed to subtract days to get to sunday");
 
-    // Fetch contributions
-    let contributions = vec![
+    // Fetch contributions. Allow any of these to fail, then we'll just skip them
+    let contributions: Vec<Option<ContributionCollection>> = vec![
         github_contributions::get_github_contributions(start_date, end_date)
             .await
-            .expect("GitHub fetch failed"),
+            .ok(),
         gitlab_contributions::get_gitlab_contributions(start_date, end_date)
             .await
-            .expect("GitLab fetch failed"),
+            .ok(),
     ];
 
     // Process data
