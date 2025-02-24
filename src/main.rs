@@ -73,7 +73,6 @@ async fn convert_weeks_to_rows(
     (contributions_per_row, max_contributions)
 }
 
-// Take a reference to the contributions_per_row to avoid moving it
 async fn print_months(contributions_per_row: &Vec<Vec<Option<ContributionDay>>>) {
     let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
     let months = [
