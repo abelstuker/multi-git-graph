@@ -103,14 +103,23 @@ pub async fn get_github_contributions() -> Result<ContributionCollection, reqwes
             .weeks
             .iter()
             .map(|week| {
+                let weeknumber = data
+                    .user
+                    .contributions_collection
+                    .contribution_calendar
+                    .weeks
+                    .iter()
+                    .position(|w| w.first_day == week.first_day)
+                    .unwrap() as i64;
                 (
-                    week.first_day.clone(),
+                    weeknumber,
                     week.contribution_days
                         .iter()
                         .map(|day| ContributionDay {
                             contribution_count: day.contribution_count,
                             date: day.date.clone(),
                             weekday: day.weekday,
+                            weeknumber: weeknumber,
                         })
                         .collect(),
                 )

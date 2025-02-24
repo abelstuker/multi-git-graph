@@ -6,11 +6,12 @@ use termcolor::{ColorSpec, StandardStream, WriteColor};
 
 mod colors;
 mod github_contributions;
+mod gitlab_contributions;
 
 #[derive(Debug)]
 pub struct ContributionCollection {
     provider: String,
-    contributions: Vec<(String, Vec<ContributionDay>)>,
+    contributions: Vec<(i64, Vec<ContributionDay>)>,
     max_contributions: i64,
 }
 
@@ -18,6 +19,7 @@ pub struct ContributionCollection {
 pub struct ContributionDay {
     contribution_count: i64,
     date: String,
+    weeknumber: i64,
     weekday: i64,
 }
 
@@ -36,21 +38,43 @@ impl HexToRGB for String {
 }
 
 async fn convert_weeks_to_rows(
-    contributions_per_week: Vec<(String, Vec<ContributionDay>)>,
-) -> Vec<Vec<ContributionDay>> {
+    contribution_collections: Vec<ContributionCollection>,
+) -> (Vec<Vec<Option<ContributionDay>>>, i64) {
     // All first days of the week go in the first row, second days in the second row, etc.
-    let mut contributions_per_row: Vec<Vec<ContributionDay>> = vec![vec![]; 7];
-    for (_, contributions) in contributions_per_week {
-        for (i, contribution) in contributions.iter().enumerate() {
-            contributions_per_row[i].push(contribution.clone());
+    let mut contributions_per_row: Vec<Vec<Option<ContributionDay>>> = vec![vec![]; 7];
+    let mut max_contributions = 0;
+    for contribution_collection in contribution_collections {
+        for (weeknumber, contributions) in contribution_collection.contributions {
+            println!("Weeknumber: {}", weeknumber);
+            for (day, contribution) in contributions.iter().enumerate() {
+                while contributions_per_row[day].len() <= weeknumber as usize {
+                    contributions_per_row[day].push(None);
+                }
+                // If contributions_per_row[day][weeknumber] is None, set it to contribution
+                if let Some(contribution_day) = &contributions_per_row[day][weeknumber as usize] {
+                    // Update contribution count
+                    contributions_per_row[day][weeknumber as usize] = Some(ContributionDay {
+                        contribution_count: contribution_day.contribution_count
+                            + contribution.contribution_count,
+                        date: contribution_day.date.clone(),
+                        weeknumber: contribution_day.weeknumber,
+                        weekday: contribution_day.weekday,
+                    });
+                } else {
+                    contributions_per_row[day][weeknumber as usize] = Some(contribution.clone());
+                }
+
+                if contribution.contribution_count > max_contributions {
+                    max_contributions = contribution.contribution_count;
+                }
+            }
         }
     }
-
-    contributions_per_row
+    (contributions_per_row, max_contributions)
 }
 
 // Take a reference to the contributions_per_row to avoid moving it
-async fn print_months(contributions_per_row: &Vec<Vec<ContributionDay>>) {
+async fn print_months(contributions_per_row: &Vec<Vec<Option<ContributionDay>>>) {
     let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
     let months = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -58,7 +82,7 @@ async fn print_months(contributions_per_row: &Vec<Vec<ContributionDay>>) {
     let mut previous_month = "";
     let mut just_printed_month = false;
     for start_of_week_date in &contributions_per_row[contributions_per_row.len() - 1] {
-        let date = &start_of_week_date.date;
+        let date = &start_of_week_date.clone().unwrap().date;
         let day: u64 = date.split('-').collect::<Vec<&str>>()[2].parse().unwrap();
         let month = date.split('-').collect::<Vec<&str>>()[1];
         let month = months[month.parse::<usize>().unwrap() - 1];
@@ -79,16 +103,18 @@ async fn print_months(contributions_per_row: &Vec<Vec<ContributionDay>>) {
 }
 
 async fn print_contribution_graph(
-    contributions_per_row: &Vec<Vec<ContributionDay>>,
+    contributions_per_row: &Vec<Vec<Option<ContributionDay>>>,
     max_contributions: i64,
 ) {
     let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
     for row in contributions_per_row {
         for contribution in row {
             // Color index between 0 and 5 (based on max_contributions)
-            let color_index = (contribution.contribution_count as f64 / max_contributions as f64
-                * (GITHUB_COLORS.len() - 1) as f64)
-                .ceil() as usize;
+            let color_index = contribution.as_ref().map_or(0, |c| {
+                (c.contribution_count as f64 / max_contributions as f64
+                    * (GITHUB_COLORS.len() - 1) as f64)
+                    .ceil() as usize
+            });
             let rgb = GITHUB_COLORS[color_index].to_string().get_rgb();
             stdout
                 .set_color(
@@ -112,15 +138,14 @@ async fn main() {
     let github_contributions = github_contributions::get_github_contributions()
         .await
         .expect("Failed to get GitHub contributions");
+    let gitlab_contributions = gitlab_contributions::get_gitlab_contributions()
+        .await
+        .expect("Failed to get GitLab contributions");
 
-    // let github_contributions_per_week = split_contributions_in_weeks(&github_contributions).await;
-    let github_contributions_per_row =
-        convert_weeks_to_rows(github_contributions.contributions).await;
+    let contribution_collections = vec![github_contributions, gitlab_contributions];
+    let (contributions_per_row, max_contributions) =
+        convert_weeks_to_rows(contribution_collections).await;
 
-    print_months(&github_contributions_per_row).await;
-    print_contribution_graph(
-        &github_contributions_per_row,
-        github_contributions.max_contributions,
-    )
-    .await;
+    print_months(&contributions_per_row).await;
+    print_contribution_graph(&contributions_per_row, max_contributions).await;
 }
