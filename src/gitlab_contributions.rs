@@ -1,13 +1,37 @@
-use std::fmt::Debug;
-
 use reqwest::Client;
 use serde::Deserialize;
-use time::Duration;
+use std::fmt::Debug;
+use thiserror::Error;
+use time::{Date, Duration, OffsetDateTime};
 
 use crate::{ContributionCollection, ContributionDay};
 
+// Configuration
+#[derive(Debug)]
+struct GitLabConfig {
+    server: String,
+    username: String,
+    token: String,
+}
+
+impl GitLabConfig {
+    fn from_env() -> Result<Self, GitLabError> {
+        Ok(Self {
+            server: dotenv::var("GITLAB_SERVER")
+                .map_err(|_| GitLabError::ConfigError("GITLAB_SERVER must be set".into()))?
+                .trim_end_matches('/')
+                .to_string(),
+            username: dotenv::var("GITLAB_USERNAME")
+                .map_err(|_| GitLabError::ConfigError("GITLAB_USERNAME must be set".into()))?,
+            token: dotenv::var("GITLAB_TOKEN")
+                .map_err(|_| GitLabError::ConfigError("GITLAB_TOKEN must be set".into()))?,
+        })
+    }
+}
+
+// API Types
 #[derive(Debug, Deserialize)]
-struct GitLabData {
+struct GitLabEvent {
     id: i64,
     project_id: i64,
     action_name: String,
@@ -19,97 +43,155 @@ struct GitLabData {
     created_at: String,
 }
 
-pub async fn get_gitlab_contributions() -> Result<ContributionCollection, reqwest::Error> {
-    let server = dotenv::var("GITLAB_SERVER").expect("GITLAB_SERVER must be set");
-    let server = server.trim_end_matches('/');
-    let username = dotenv::var("GITLAB_USERNAME").expect("GITLAB_USERNAME must be set");
-    let token = dotenv::var("GITLAB_TOKEN").expect("GITLAB_TOKEN must be set");
+// Error handling
+#[derive(Debug, Error)]
+pub enum GitLabError {
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    #[error("HTTP request failed: {0}")]
+    RequestError(#[from] reqwest::Error),
+    #[error("Failed to parse response: {0}")]
+    ParseError(#[from] serde_json::Error),
+    #[error("Date parsing error: {0}")]
+    DateError(String),
+}
 
-    let endpoint = format!("{}/api/v4/users/{}/events", server, username);
-    let client = Client::new();
+// GitLab client
+struct GitLabClient {
+    client: Client,
+    config: GitLabConfig,
+}
 
-    let res = client
-        .get(endpoint)
-        .header("PRIVATE-TOKEN", token)
-        .send()
-        .await?;
+impl GitLabClient {
+    fn new(config: GitLabConfig) -> Self {
+        Self {
+            client: Client::new(),
+            config,
+        }
+    }
 
-    let json_value: serde_json::Value =
-        serde_json::from_str(&res.text().await.expect("Failed to get text"))
-            .expect("Failed to parse JSON");
-    let data: Vec<GitLabData> = serde_json::from_value(json_value).expect("Failed to parse JSON");
+    async fn fetch_events(
+        &self,
+        start_date: OffsetDateTime,
+        end_date: OffsetDateTime,
+    ) -> Result<Vec<GitLabEvent>, GitLabError> {
+        let endpoint = format!(
+            "{}/api/v4/users/{}/events?after={}-{}-{}&before={}-{}-{}",
+            self.config.server,
+            self.config.username,
+            start_date.year(),
+            start_date.month(),
+            start_date.day(),
+            end_date.year(),
+            end_date.month(),
+            end_date.day()
+        );
 
-    let (contributions_per_week, max_contributions) = process_contributions(data);
+        let response = self
+            .client
+            .get(endpoint)
+            .header("PRIVATE-TOKEN", &self.config.token)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let events: Vec<GitLabEvent> = response.json().await?;
+        Ok(events)
+    }
+}
+
+// Contribution processor
+struct ContributionProcessor {
+    start_date: OffsetDateTime,
+    end_date: OffsetDateTime,
+}
+
+impl ContributionProcessor {
+    fn new(start_date: OffsetDateTime, end_date: OffsetDateTime) -> Self {
+        Self {
+            start_date,
+            end_date,
+        }
+    }
+
+    fn initialize_contribution_calendar(&self) -> Vec<(i64, Vec<ContributionDay>)> {
+        let mut contributions = Vec::new();
+        let mut current_date = self.start_date;
+        let mut week_number = 0;
+
+        while current_date < self.end_date {
+            let mut week_days = Vec::new();
+
+            for _ in 0..7 {
+                week_days.push(ContributionDay {
+                    contribution_count: 0,
+                    weeknumber: week_number,
+                    date: format!(
+                        "{}-{:02}-{:02}",
+                        current_date.year(),
+                        current_date.month() as u8,
+                        current_date.day()
+                    ),
+                    weekday: current_date.weekday().number_days_from_sunday() as i64,
+                });
+                current_date = current_date
+                    .checked_add(Duration::days(1))
+                    .expect("Failed to increment date");
+            }
+
+            contributions.push((week_number, week_days));
+            week_number += 1;
+        }
+
+        contributions
+    }
+
+    fn process_events(
+        &self,
+        events: Vec<GitLabEvent>,
+        mut calendar: Vec<(i64, Vec<ContributionDay>)>,
+    ) -> (Vec<(i64, Vec<ContributionDay>)>, i64) {
+        let mut max_contributions = 0;
+
+        for event in events {
+            let date_str = event
+                .created_at
+                .split('T')
+                .next()
+                .expect("Invalid date format");
+
+            // Find and update the contribution day
+            for (_, week) in calendar.iter_mut() {
+                for day in week.iter_mut() {
+                    if day.date == date_str {
+                        day.contribution_count += 1;
+                        max_contributions = max_contributions.max(day.contribution_count);
+                        break;
+                    }
+                }
+            }
+        }
+
+        (calendar, max_contributions)
+    }
+}
+
+// Public API
+pub async fn get_gitlab_contributions(
+    start_date: OffsetDateTime,
+    end_date: OffsetDateTime,
+) -> Result<ContributionCollection, GitLabError> {
+    let config = GitLabConfig::from_env()?;
+    let client = GitLabClient::new(config);
+    let events = client.fetch_events(start_date, end_date).await?;
+
+    let processor = ContributionProcessor::new(start_date, end_date);
+    let calendar = processor.initialize_contribution_calendar();
+    let (contributions, max_contributions) = processor.process_events(events, calendar);
 
     Ok(ContributionCollection {
         provider: "GitLab".to_string(),
-        contributions: contributions_per_week,
-        max_contributions: max_contributions,
+        contributions,
+        max_contributions,
     })
-}
-
-fn process_contributions(data: Vec<GitLabData>) -> (Vec<(i64, Vec<ContributionDay>)>, i64) {
-    let mut contributions_per_week: Vec<(i64, Vec<ContributionDay>)> = vec![];
-    let mut max_contributions = 0;
-
-    let end_date = time::OffsetDateTime::now_utc();
-    let start_date = end_date
-        .checked_sub(Duration::days(365))
-        .expect("Failed to subtract 365 days")
-        .checked_sub(Duration::days(end_date.weekday() as i64 - 1))
-        .expect("Failed to subtract days to start of week");
-
-    let mut current_date = start_date;
-    let mut current_weeknumber = 0;
-    while current_date < end_date {
-        let mut contribution_days = vec![];
-        for i in 0..7 {
-            contribution_days.push(ContributionDay {
-                contribution_count: 0,
-                weeknumber: current_weeknumber,
-                date: format!(
-                    "{}-{:02}-{:02}",
-                    current_date.year(),
-                    // Month number
-                    current_date.month() as u8,
-                    current_date.day()
-                ),
-                weekday: current_date.weekday().number_days_from_sunday() as i64,
-            });
-            current_date = current_date.checked_add(Duration::days(1)).unwrap();
-        }
-        contributions_per_week.push((current_weeknumber, contribution_days));
-        current_weeknumber += 1;
-    }
-
-    for contribution in data {
-        let date = contribution.created_at.split('T').collect::<Vec<&str>>()[0];
-        let date = date.split('-').collect::<Vec<&str>>();
-        let date = (
-            date[0].parse::<i32>().unwrap(),
-            date[1].parse::<u32>().unwrap(),
-            date[2].parse::<u32>().unwrap(),
-        );
-        let contribution_day = contributions_per_week
-            .iter_mut()
-            .find(|(_, contribution_days)| {
-                contribution_days
-                    .iter()
-                    .any(|day| day.date == format!("{}-{:02}-{:02}", date.0, date.1, date.2))
-            })
-            .expect("Failed to find contribution day A");
-
-        let contribution_day = &mut contribution_day.1;
-        let contribution_day = contribution_day
-            .iter_mut()
-            .find(|day| day.date == format!("{}-{:02}-{:02}", date.0, date.1, date.2))
-            .expect("Failed to find contribution day B");
-
-        contribution_day.contribution_count += 1;
-        if contribution_day.contribution_count > max_contributions {
-            max_contributions = contribution_day.contribution_count;
-        }
-    }
-
-    (contributions_per_week, max_contributions)
 }
