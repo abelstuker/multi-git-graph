@@ -1,4 +1,4 @@
-# All Contributions CLI
+# Multi Git Graph CLI
 
 Allows you to view your contribution graph for multiple Git servers combined, in your CLI.
 
