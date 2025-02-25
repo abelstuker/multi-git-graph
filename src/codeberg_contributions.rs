@@ -8,30 +8,30 @@ use crate::{ContributionCollection, ContributionDay};
 
 // Configuration
 #[derive(Debug)]
-struct GiteaConfig {
+struct CodebergConfig {
     server: String,
     username: String,
     token: String,
 }
 
-impl GiteaConfig {
+impl CodebergConfig {
     fn from_env() -> Result<Self, GitLabError> {
         Ok(Self {
-            server: dotenv::var("GITEA_SERVER")
-                .map_err(|_| GitLabError::ConfigError("GITEA_SERVER must be set".into()))?
+            server: dotenv::var("CODEBERG_SERVER")
+                .map_err(|_| GitLabError::ConfigError("CODEBERG_SERVER must be set".into()))?
                 .trim_end_matches('/')
                 .to_string(),
-            username: dotenv::var("GITEA_USERNAME")
-                .map_err(|_| GitLabError::ConfigError("GITEA_USERNAME must be set".into()))?,
-            token: dotenv::var("GITEA_TOKEN")
-                .map_err(|_| GitLabError::ConfigError("GITEA_TOKEN must be set".into()))?,
+            username: dotenv::var("CODEBERG_USERNAME")
+                .map_err(|_| GitLabError::ConfigError("CODEBERG_USERNAME must be set".into()))?,
+            token: dotenv::var("CODEBERG_TOKEN")
+                .map_err(|_| GitLabError::ConfigError("CODEBERG_TOKEN must be set".into()))?,
         })
     }
 }
 
 // API Types
 #[derive(Debug, Deserialize)]
-struct GiteaEvent {
+struct CodebergEvent {
     timestamp: i64,
     contributions: i64,
 }
@@ -50,13 +50,13 @@ pub enum GitLabError {
 }
 
 // GitLab client
-struct GiteaClient {
+struct CodebergClient {
     client: Client,
-    config: GiteaConfig,
+    config: CodebergConfig,
 }
 
-impl GiteaClient {
-    fn new(config: GiteaConfig) -> Self {
+impl CodebergClient {
+    fn new(config: CodebergConfig) -> Self {
         Self {
             client: Client::new(),
             config,
@@ -67,7 +67,7 @@ impl GiteaClient {
         &self,
         start_date: OffsetDateTime,
         end_date: OffsetDateTime,
-    ) -> Result<Vec<GiteaEvent>, GitLabError> {
+    ) -> Result<Vec<CodebergEvent>, GitLabError> {
         /*
               curl -X 'GET' \
         'https://git.infogroep.be/api/v1/users/abstuker/heatmap' \
@@ -87,7 +87,7 @@ impl GiteaClient {
             .await?
             .error_for_status()?;
 
-        let events: Vec<GiteaEvent> = response.json().await?;
+        let events: Vec<CodebergEvent> = response.json().await?;
         Ok(events)
     }
 }
@@ -140,7 +140,7 @@ impl ContributionProcessor {
 
     fn process_events(
         &self,
-        events: Vec<GiteaEvent>,
+        events: Vec<CodebergEvent>,
         mut calendar: Vec<(i64, Vec<ContributionDay>)>,
     ) -> (Vec<(i64, Vec<ContributionDay>)>, i64) {
         let mut max_contributions = 0;
@@ -168,12 +168,12 @@ impl ContributionProcessor {
 }
 
 // Public API
-pub async fn get_gitea_contributions(
+pub async fn get_codeberg_contributions(
     start_date: OffsetDateTime,
     end_date: OffsetDateTime,
 ) -> Result<ContributionCollection, GitLabError> {
-    let config = GiteaConfig::from_env()?;
-    let client = GiteaClient::new(config);
+    let config = CodebergConfig::from_env()?;
+    let client = CodebergClient::new(config);
     let events = client.fetch_events(start_date, end_date).await?;
 
     let processor = ContributionProcessor::new(start_date, end_date);
@@ -181,7 +181,7 @@ pub async fn get_gitea_contributions(
     let (contributions, max_contributions) = processor.process_events(events, calendar);
 
     Ok(ContributionCollection {
-        provider: "Gitea".to_string(),
+        provider: "Codeberg".to_string(),
         contributions,
         max_contributions,
     })

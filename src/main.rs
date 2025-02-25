@@ -1,6 +1,7 @@
 use std::io::Write;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+mod codeberg_contributions;
 mod colors;
 mod gitea_contributions;
 mod github_contributions;
@@ -206,6 +207,9 @@ async fn main() -> std::io::Result<()> {
             .await
             .ok(),
         gitea_contributions::get_gitea_contributions(start_date, end_date)
+            .await
+            .ok(),
+        codeberg_contributions::get_codeberg_contributions(start_date, end_date)
             .await
             .ok(),
     ];
