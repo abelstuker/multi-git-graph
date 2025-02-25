@@ -13,7 +13,7 @@ impl ColorScheme {
 pub const SCHEMES: &[ColorScheme] = &[
     ColorScheme {
         name: "github",
-        colors: ["#eeeeee", "#216e39", "#30a14e", "#40c463", "#9be9a8"],
+        colors: ["#eeeeee", "#2ea043", "#3fb950", "#50d05d", "#a1f1a8"],
     },
     ColorScheme {
         name: "halloween",

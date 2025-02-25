@@ -15,6 +15,6 @@ A [color scheme](src/colors.rs) can be set using the `COLOR_SCHEME` variable.
 | --------- | --------- | -------------------------------------------------- |
 | Github    | ✅        | `GITHUB_TOKEN`, `GITHUB_USERNAME`                  |
 | GitLab    | ✅        | `GITLAB_TOKEN`, `GITLAB_SERVER`, `GITLAB_USERNAME` |
-| Gitea     | ❌        |
+| Gitea     | ✅        | `GITEA_TOKEN`, `GITEA_SERVER`, `GITEA_USERNAME`    |
 | Codeberg  | ❌        |
 | BitBucket | ❌        |
