@@ -1,27 +1,28 @@
-use crate::{ContributionCollection, ContributionDay};
+use crate::{
+    ContributionCollection, ProviderError,
+    processor::{ContributionProcessor, Event},
+};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use serde::Deserialize;
 use time::OffsetDateTime;
 
-// Configuration
+#[derive(Debug)]
 struct GitHubConfig {
     token: String,
     username: String,
 }
 
 impl GitHubConfig {
-    fn from_env() -> Result<Self, GitHubError> {
+    fn from_env() -> Result<Self, ProviderError> {
         Ok(Self {
             token: dotenv::var("GITHUB_TOKEN")
-                .map_err(|_| GitHubError::ConfigError("GITHUB_TOKEN must be set".into()))?,
+                .map_err(|_| ProviderError::ConfigError("GITHUB_TOKEN must be set".into()))?,
             username: dotenv::var("GITHUB_USERNAME")
-                .map_err(|_| GitHubError::ConfigError("GITHUB_USERNAME must be set".into()))?,
+                .map_err(|_| ProviderError::ConfigError("GITHUB_USERNAME must be set".into()))?,
         })
     }
 }
 
-// GraphQL query constant
 const GITHUB_CONTRIBUTIONS_QUERY: &str = r#"
 query($username: String!) {
     user(login: $username) {
@@ -45,7 +46,6 @@ query($username: String!) {
 }
 "#;
 
-// API response types
 #[derive(Deserialize, Debug)]
 struct GitHubResponse {
     data: GitHubData,
@@ -56,6 +56,7 @@ struct GitHubData {
     user: GitHubUser,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct GitHubUser {
     name: String,
@@ -63,12 +64,14 @@ struct GitHubUser {
     contributions_collection: GitHubContributionsCollection,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct GitHubContributionsCollection {
     #[serde(rename = "contributionCalendar")]
     contribution_calendar: GitHubContributionCalendar,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct GitHubContributionCalendar {
     colors: Vec<String>,
@@ -77,6 +80,7 @@ struct GitHubContributionCalendar {
     weeks: Vec<GitHubWeek>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct GitHubWeek {
     #[serde(rename = "contributionDays")]
@@ -85,6 +89,7 @@ struct GitHubWeek {
     first_day: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 struct GitHubContributionDay {
     color: String,
@@ -94,20 +99,20 @@ struct GitHubContributionDay {
     weekday: i64,
 }
 
-// Custom error type
-#[derive(Debug, thiserror::Error)]
-pub enum GitHubError {
-    #[error("HTTP request failed: {0}")]
-    RequestError(#[from] reqwest::Error),
-    #[error("Failed to parse response: {0}")]
-    ParseError(#[from] serde_json::Error),
-    #[error("GitHub API error: {0}")]
-    ApiError(String),
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
+impl Event for GitHubContributionDay {
+    fn timestamp(&self) -> Result<OffsetDateTime, ProviderError> {
+        time::Date::parse(
+            &self.date,
+            &time::format_description::well_known::Iso8601::DATE,
+        )
+        .map(|date| date.midnight().assume_utc())
+        .map_err(|e| ProviderError::DateError(format!("Failed to parse date: {}", e)))
+    }
+    fn contributions(&self) -> i64 {
+        self.contribution_count
+    }
 }
 
-// GitHub client
 struct GitHubClient {
     client: Client,
     config: GitHubConfig,
@@ -121,7 +126,11 @@ impl GitHubClient {
         }
     }
 
-    async fn fetch_contributions(&self) -> Result<GitHubResponse, GitHubError> {
+    async fn fetch_events(
+        &self,
+        _start_date: OffsetDateTime,
+        _end_date: OffsetDateTime,
+    ) -> Result<Vec<GitHubContributionDay>, ProviderError> {
         let variables = serde_json::json!({
             "username": self.config.username,
         });
@@ -141,78 +150,35 @@ impl GitHubClient {
             .await?
             .error_for_status()?;
 
-        let github_response = response.json().await?;
-        Ok(github_response)
-    }
-}
-
-// Contribution processor
-struct ContributionProcessor {
-    start_date: OffsetDateTime,
-    end_date: OffsetDateTime,
-}
-
-impl ContributionProcessor {
-    fn new(start_date: OffsetDateTime, end_date: OffsetDateTime) -> Self {
-        Self {
-            start_date,
-            end_date,
-        }
-    }
-
-    fn process_calendar(self, calendar: &GitHubContributionCalendar) -> ContributionCollection {
-        let contributions: Vec<(i64, Vec<ContributionDay>)> = calendar
+        let github_response: GitHubResponse = response.json().await?;
+        let events = github_response
+            .data
+            .user
+            .contributions_collection
+            .contribution_calendar
             .weeks
-            .iter()
-            .enumerate()
-            .map(|(week_idx, week)| {
-                let weeknumber = week_idx as i64;
-                let days = week
-                    .contribution_days
-                    .iter()
-                    .map(|day| ContributionDay {
-                        contribution_count: day.contribution_count,
-                        date: day.date.clone(),
-                        weekday: day.weekday,
-                        weeknumber,
-                    })
-                    .collect();
-                (weeknumber, days)
-            })
+            .into_iter()
+            .flat_map(|week| week.contribution_days)
             .collect();
-
-        let max_contributions = calendar
-            .weeks
-            .iter()
-            .flat_map(|week| week.contribution_days.iter())
-            .map(|day| day.contribution_count)
-            .max()
-            .unwrap_or(0);
-
-        ContributionCollection {
-            provider: "GitHub".to_string(),
-            contributions,
-            max_contributions,
-        }
+        Ok(events)
     }
 }
 
-// Public API
 pub async fn get_github_contributions(
     start_date: OffsetDateTime,
     end_date: OffsetDateTime,
-) -> Result<ContributionCollection, GitHubError> {
+) -> Result<ContributionCollection, ProviderError> {
     let config = GitHubConfig::from_env()?;
     let client = GitHubClient::new(config);
-    let response = client.fetch_contributions().await?;
+    let events = client.fetch_events(start_date, end_date).await?;
 
-    let calendar = response
-        .data
-        .user
-        .contributions_collection
-        .contribution_calendar;
     let processor = ContributionProcessor::new(start_date, end_date);
-    let contributions = processor.process_calendar(&calendar);
+    let calendar = processor.initialize_contribution_calendar();
+    let (contributions, max_contributions) = processor.process_events(events, calendar)?;
 
-    Ok(contributions)
+    Ok(ContributionCollection {
+        provider: "GitHub".to_string(),
+        contributions,
+        max_contributions,
+    })
 }

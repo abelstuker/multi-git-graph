@@ -4,6 +4,7 @@ pub struct ColorScheme {
     pub colors: [&'static str; 5],
 }
 
+#[allow(dead_code)]
 impl ColorScheme {
     pub fn get_color(&self, index: usize) -> &'static str {
         self.colors.get(index).unwrap_or(&self.colors[0])
@@ -110,6 +111,7 @@ impl ColorScheme {
         SCHEMES.iter().find(|scheme| scheme.name == name)
     }
 
+    #[allow(dead_code)]
     pub fn default() -> &'static ColorScheme {
         &SCHEMES[0] // GitHub colors as default
     }
