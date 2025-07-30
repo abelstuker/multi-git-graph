@@ -1,5 +1,7 @@
 # Multi Git Graph CLI
 
+[![stability-wip](https://img.shields.io/badge/stability-wip-lightgrey.svg)]()
+
 Allows you to view your contribution graph for multiple Git servers combined, in your CLI.
 
 <img src="demo/demo.png" alt="demo" width="700"/>
